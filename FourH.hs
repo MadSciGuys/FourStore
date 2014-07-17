@@ -158,8 +158,9 @@ fsClose = waitForProcess . fsProc
 
 -- | Execute the provided query on the provided 'FsHandle'. The remainder of the 4s-query process'
 --   life is dedicated to handling on-demand lazy evaluation, so each 'FsHandle' is effectively
---   only good for one query. Once the entire query result has been thunk'd, the 4s-query process
---   becomes a zombie until 'fsClose' is called.
+--   only good for one query; attempting to re-use an 'FsHandle' will raise an IO Exception. Once
+--   the entire query result has been thunk'd, the 4s-query process remains until 'fsClose' is
+--   called.
 --
 --   Each record is returned as a list of 'C.Bytestring's representing the variables bound in the
 --   query's SELECT statement.
