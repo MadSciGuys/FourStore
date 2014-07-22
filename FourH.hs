@@ -52,6 +52,7 @@ module FourH (
     -- * Query Execution
 
    ,fsSelectQuery
+   ,fsConstructQuery
 ) where
 
 import qualified Data.ByteString.Lazy.Char8 as C (ByteString, split, lines, hGetContents)
@@ -59,7 +60,7 @@ import qualified Data.ByteString.Lazy.Char8 as C (ByteString, split, lines, hGet
 import Data.List (init, tail)
 
 import System.Exit (ExitCode(..))
-import System.IO (Handle, hReady, hGetContents, hPutStr, hFlush, hClose, hSetBinaryMode)
+import System.IO (Handle, hReady, hGetContents, hPutStr, hFlush, hClose, hSetBinaryMode, hGetLine)
 import System.Process (ProcessHandle, CreateProcess(..), StdStream(CreatePipe), createProcess,
                        proc, terminateProcess, waitForProcess)
 
@@ -75,10 +76,8 @@ type FsError  = Handle
 type FsProc   = ProcessHandle
 data FsMode = Select | Construct
 
--- | Abstract reference to a 4s-query process. An 'FsHandle' is created by the 'fsSelectQuery' or
---   'fsConstructQuery' function, depending on what sort of query will be executed. In order to
---   safely implement lazy result fetching, each 'FsHandle' can handle only one query; subsequent
---   queries (even to the same knowledge base) must be executed with a new 'FsHandle'.
+-- | Abstract reference to a 4s-query process. An 'FsHandle' is created by the 'fsSelectConnect' or
+--   'fsConstructConnect' functions, depending on what sort of query will be executed.
 newtype FsHandle = FsHandle { getHandles :: (FsInput, FsOutput, FsError, FsProc, FsMode) }
 
 fsInput :: FsHandle -> FsInput
@@ -102,8 +101,10 @@ optString Oone   = "-O1"
 optString Otwo   = "-O2"
 optString Othree = "-O3"
 
--- | Spawn a 4s-query process in SELECT mode connected to the specified knowledge base and running
---   with the provided optimization level.
+-- | Spawn a 4s-query process in select mode connected to the specified knowledge base and running
+--   with the provided optimization level. In order to safely implement lazy result fetching, each
+--   'FsHandle' is only usable for one query; subsequent select queries (even to the same KB) must
+--   be executed with a new 'FsHandle'.
 fsSelectConnect :: KBname -> OptLevel -> IO FsHandle
 fsSelectConnect kbname optlevel = do
     (Just fsin, Just fsout, Just fserr, ph) <-
@@ -117,14 +118,15 @@ fsSelectConnect kbname optlevel = do
             hSetBinaryMode fsout True >>
             return (FsHandle (fsin, fsout, fserr, ph, Select))
 
--- | Spawn a 4s-query process in CONSTRUCT mode connected to the specified knowledge base and
+-- | Spawn a 4s-query process in construct mode connected to the specified knowledge base and
 --   running with the provided optimization level. 4s-query processes created by this function will
 --   insert the immediate results of any construct query into the knowledge base and will not be
---   accessible from Haskell.
+--   accessible from Haskell. Unlike select mode 'FsHandle's, construct queries will block until
+--   the KB being inserted into is consistent and are therefore /reusable/.
 fsConstructConnect :: KBname -> OptLevel -> IO FsHandle
 fsConstructConnect kbname optlevel = do
     (Just fsin, Just fsout, Just fserr, ph) <-
-        createProcess (proc "4s-query" ["-P", "-s", "-1", "-i", optString optlevel, kbname])
+        createProcess (proc "4s-query" ["-P", "-s", "-1", "-I", optString optlevel, kbname])
             { std_in = CreatePipe, std_out = CreatePipe, std_err = CreatePipe }
     anyStdOut <- hReady fsout
     anyStdErr <- hReady fserr
@@ -141,7 +143,8 @@ fsKill fsh = terminateProcess fsp >> waitForProcess fsp
 
 -- | Send EOF to the 4s-query process referenced by the provided 'FsHandle' and wait for it to
 --   terminate. Depending on the state of 4s-query's parser, 'ExitFailure' may still be returned.
---   This function is only usable on 'FsHandle's that haven't satisfied a query yet.
+--   This function is only usable on select mode 'FsHandle's that haven't satisfied a query yet or
+--   construct mode 'FsHandle's that aren't blocking.
 fsSafeTerminate :: FsHandle -> IO ExitCode
 fsSafeTerminate fsh = hPutStr fsi "\EOT" >>
                       hFlush fsi         >>
@@ -150,20 +153,20 @@ fsSafeTerminate fsh = hPutStr fsi "\EOT" >>
                         where fsp = fsProc fsh
                               fsi = fsInput fsh
 
--- | Safely terminate a 4s-query process that has already answered a query. This function will block
---   if there is remaining demand for the 4s-query process' results elsewhere in the program.
---   'fsClose' is to 'fsSelectQuery' or 'fsConstructQuery' as 'hClose' is to 'hGetContents'.
+-- | Safely terminate a select mode 4s-query process that has already answered a query. This
+--   function will block if there is remaining demand for the 4s-query process' results elsewhere in
+--   the program. 'fsClose' is to 'fsSelectQuery' as 'hClose' is to 'hGetContents'.
 fsClose :: FsHandle -> IO ExitCode
 fsClose = waitForProcess . fsProc
 
 -- | Execute the provided query on the provided 'FsHandle'. The remainder of the 4s-query process'
---   life is dedicated to handling on-demand lazy evaluation, so each 'FsHandle' is effectively
---   only good for one query; attempting to re-use an 'FsHandle' will raise an IO Exception. Once
---   the entire query result has been thunk'd, the 4s-query process remains until 'fsClose' is
---   called.
+--   life is dedicated to handling on-demand lazy evaluation, so each select mode 'FsHandle' is
+--   effectively only good for one query; attempting to re-use an 'FsHandle' will raise an IO
+--   Exception. Once the entire query result has been thunk'd, the 4s-query process remains until
+--   'fsClose' is called.
 --
 --   Each record is returned as a list of 'C.Bytestring's representing the variables bound in the
---   query's SELECT statement.
+--   query's select statement.
 fsSelectQuery :: FsHandle -> String -> IO [[C.ByteString]]
 fsSelectQuery (FsHandle (_, _, _, _, Construct)) _ = fail "Wrong FsHandle Mode (Construct->Select)"
 fsSelectQuery fsh q = do
@@ -173,5 +176,14 @@ fsSelectQuery fsh q = do
     output <- C.hGetContents (fsOutput fsh)
     return ((map (C.split '\t') . tail . takeWhile (/= "#EOR") . C.lines) output)
 
--- | Document this.
---fsConstructQuery :: KBName -> Optlevel -> String -> IO ()
+-- | Execute the provided query on the provided 'FsHandle'. This function will block until the KB
+--   being queried is consistent, i.e. all of the triples generated by the query are inserted.
+--   Unlike select mode 'FsHandle's, construct mode 'FsHandle's are reusable; query results aren't
+--   immediately available in Haskell so lazy evaluation need not be considered.
+fsConstructQuery :: FsHandle -> String -> IO ()
+fsConstructQuery (FsHandle (_, _, _, _, Select)) _ = fail "Wrong FsHandle Mode (Select->Construct)"
+fsConstructQuery fsh q = do
+    hPutStr (fsInput fsh) (q ++ "\n#EOQ\n")
+    hFlush (fsInput fsh)
+    hGetLine (fsOutput fsh)
+    return ()
