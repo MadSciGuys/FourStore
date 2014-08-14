@@ -1,5 +1,5 @@
 {-|
-Module      : FourH
+Module      : FourStore
 Description : Library for Efficient Inter-Process Communication with 4store
 Copyright   : Travis Whitaker 2014
 License     : All rights reserved.
@@ -7,14 +7,14 @@ Maintainer  : twhitak@its.jnj.com
 Stability   : Provisional
 Portability : POSIX
 
-FourH is a library for using 4store's efficient native binary protocol instead of the SPARQL
+FourStore is a library for using 4store's efficient native binary protocol instead of the SPARQL
 protocol. This has the additional benefit of allowing query results to be read lazily (just like
 HDBC allows for SQL databases, or normal Haskell file IO). Note that this requires the ability to
 execute the "4s-query" client on a node in the 4store cluster, e.g. via local sockets or SSH.
 Although this package does not make use of the SPARQL protocol, 'HSparql.QueryGenerator' can be
-used in conjunction with FourH. For example:
+used in conjunction with FourStore. For example:
 
- > import FourH
+ > import FourStore
  > import Database.HSparql.QueryGenerator
  >
  > selectAll = do
@@ -33,7 +33,7 @@ used in conjunction with FourH. For example:
 
 {-# LANGUAGE OverloadedStrings #-}
 
-module FourH (
+module FourStore (
 
     -- * Types
 
