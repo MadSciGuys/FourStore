@@ -53,7 +53,11 @@ module FourH (
 
    ,fsSelectQuery
    ,fsConstructQuery
+   ,fsStrictSelectQuery
+
 ) where
+
+import Control.DeepSeq (deepseq)
 
 import qualified Data.ByteString.Lazy.Char8 as C (ByteString, split, lines, hGetContents)
 
@@ -187,3 +191,14 @@ fsConstructQuery fsh q = do
     hFlush (fsInput fsh)
     hGetLine (fsOutput fsh)
     return ()
+
+-- | Execute the provided query against the provided KB at the provided optimization level. This
+--   function creates a one-time use 'FsHandle', strictly evaluates the query results, and closes
+--   the 'FsHandle'. This is often useful when a series of short queries must be run sequentially
+--   and the full result set is required soon after.
+fsStrictSelectQuery :: KBname -> OptLevel -> String -> IO [[C.ByteString]]
+fsStrictSelectQuery kb opt q = do
+    fsh <- fsSelectConnect kb opt
+    results <- fsSelectQuery fsh q
+    results `deepseq` fsClose fsh
+    return results
